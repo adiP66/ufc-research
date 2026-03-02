@@ -364,6 +364,30 @@ def _compute_ratio_features(long_df: pd.DataFrame) -> pd.DataFrame:
     # REMOVED: ko_ratio (duplicate of ko_tko_win_rate)
     # REMOVED: sig_str_land_ratio (duplicate of sig_str_acc)
     
+    # === DEFENSIVE "RATIO OF AVERAGES" ===
+    # These compute defense by dividing the fighter's smoothed historical volume
+    # of strikes absorbed by the smoothed historical volume of strikes targeted at them.
+    # This correctly weights high-volume fights and avoids the "Average of Ratios" flaw.
+    if 'opp_sig_strikes_landed_dec_avg' in long_df.columns and 'opp_sig_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['sig_strike_defense_dec_avg'] = 1 - safe_div(long_df['opp_sig_strikes_landed_dec_avg'], long_df['opp_sig_strikes_attempted_dec_avg'])
+        long_df['sig_strike_defense_dec_avg'] = long_df['sig_strike_defense_dec_avg'].clip(0, 1)
+
+    if 'opp_head_strikes_landed_dec_avg' in long_df.columns and 'opp_head_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['head_def_dec_avg'] = 1 - safe_div(long_df['opp_head_strikes_landed_dec_avg'], long_df['opp_head_strikes_attempted_dec_avg'])
+        long_df['head_def_dec_avg'] = long_df['head_def_dec_avg'].clip(0, 1)
+
+    if 'opp_body_strikes_landed_dec_avg' in long_df.columns and 'opp_body_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['body_def_dec_avg'] = 1 - safe_div(long_df['opp_body_strikes_landed_dec_avg'], long_df['opp_body_strikes_attempted_dec_avg'])
+        long_df['body_def_dec_avg'] = long_df['body_def_dec_avg'].clip(0, 1)
+
+    if 'opp_leg_strikes_landed_dec_avg' in long_df.columns and 'opp_leg_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['leg_def_dec_avg'] = 1 - safe_div(long_df['opp_leg_strikes_landed_dec_avg'], long_df['opp_leg_strikes_attempted_dec_avg'])
+        long_df['leg_def_dec_avg'] = long_df['leg_def_dec_avg'].clip(0, 1)
+
+    if 'opp_takedowns_landed_dec_avg' in long_df.columns and 'opp_takedowns_attempted_dec_avg' in long_df.columns:
+        long_df['takedown_defense_dec_avg'] = 1 - safe_div(long_df['opp_takedowns_landed_dec_avg'], long_df['opp_takedowns_attempted_dec_avg'])
+        long_df['takedown_defense_dec_avg'] = long_df['takedown_defense_dec_avg'].clip(0, 1)
+        
     return long_df
 
 
@@ -414,26 +438,10 @@ def _compute_history_features(long_df: pd.DataFrame) -> pd.DataFrame:
     def safe_div(a, b):
         return (a / (b + 1e-6)).fillna(0)
 
-    # Calculate PER-FIGHT defense first
-    if 'opp_sig_strikes_landed' in long_df.columns and 'opp_sig_strikes_attempted' in long_df.columns:
-        long_df['sig_strike_defense'] = 1 - safe_div(long_df['opp_sig_strikes_landed'], long_df['opp_sig_strikes_attempted'])
-        long_df['sig_strike_defense'] = long_df['sig_strike_defense'].clip(0, 1)
-
-    if 'opp_head_strikes_landed' in long_df.columns and 'opp_head_strikes_attempted' in long_df.columns:
-        long_df['head_def'] = 1 - safe_div(long_df['opp_head_strikes_landed'], long_df['opp_head_strikes_attempted'])
-        long_df['head_def'] = long_df['head_def'].clip(0, 1)
-
-    if 'opp_body_strikes_landed' in long_df.columns and 'opp_body_strikes_attempted' in long_df.columns:
-        long_df['body_def'] = 1 - safe_div(long_df['opp_body_strikes_landed'], long_df['opp_body_strikes_attempted'])
-        long_df['body_def'] = long_df['body_def'].clip(0, 1)
-
-    if 'opp_leg_strikes_landed' in long_df.columns and 'opp_leg_strikes_attempted' in long_df.columns:
-        long_df['leg_def'] = 1 - safe_div(long_df['opp_leg_strikes_landed'], long_df['opp_leg_strikes_attempted'])
-        long_df['leg_def'] = long_df['leg_def'].clip(0, 1)
-
-    if 'opp_takedowns_landed' in long_df.columns and 'opp_takedowns_attempted' in long_df.columns:
-        long_df['takedown_defense'] = 1 - safe_div(long_df['opp_takedowns_landed'], long_df['opp_takedowns_attempted'])
-        long_df['takedown_defense'] = long_df['takedown_defense'].clip(0, 1)
+    # Calculate PER-FIGHT defense first (REMOVED)
+    # These were previously calculating "Average of Ratios" which is mathematically flawed.
+    # We now calculate "Ratio of Averages" inside _compute_ratio_features using the
+    # smoothed _dec_avg columns of the opponent's raw volume.
     
     exclude = {'fight_id', 'event_date', 'fighter_name', 'fighter_id', 'opponent_name', 'opponent_id', 'is_a', 'weight_class', 'win', 'result', 
                'height', 'reach'}  # age removed from exclude to get age_dec_avg_diff
