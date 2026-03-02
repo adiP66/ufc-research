@@ -992,18 +992,50 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
         c.endswith('_dec_adjperf_dec_avg') or 
         c.endswith('_dec_avg')
     ) and 'roll3' not in c]  # Exclude roll3 features
+    
     # Keep derived features (sos_ewm REMOVED - negative importance)
     feature_cols += ['total_fights', 'win_streak',
                      'win_rate', 'ko_tko_win_rate', 'decision_win_rate', 'days_since_last_fight',
-                     # Ratio features (aliases removed: ctrl_ratio, rev_rate, sub_att, td_per_sig_str_att)
+                     # Ratio features
                      'ctrl_per_min', 'distance_acc', 'leg_land_per_min',
                      'distance_per_sig_str', 'td_per_sig_att',
                      'ground_land_per_ctrl', 'td_land_per_ctrl', 'rev_per_ctrlopp',
                      # ELO features
-                     'elo', 'elo_trend']
+                     'elo_trend'] # elo removed (redundant with win_prob)
     
     # Filter to only features that exist
     feature_cols = [c for c in feature_cols if c in long_df.columns]
+
+    # === NOISE & COLLINEARITY PRUNING (VIF FIX) ===
+    # 1. Remove exactly redundant features
+    redundant_exact_features = {
+        'distance_land_ratio',
+        'distance_land_ratio_dec_adjperf_dec_avg',
+        'elo',                  # Redundant with elo_win_prob
+        'elo_diff_squared',     # High collinearity with elo_win_prob
+        'age_ratio',            # Redundant with age_dec_adjperf_dec_avg
+        'age_ratio_dec_avg',    # Redundant
+    }
+    
+    # 2. Aggressive Volume Pruning
+    # Drop raw "landed" counts (_dec_avg) for stats that have Z-scores or Ratios
+    # This kills the Infinite VIF closure.
+    volume_to_drop = {
+        'head_strikes_landed_dec_avg', 'body_strikes_landed_dec_avg', 'leg_strikes_landed_dec_avg',
+        'distance_strikes_landed_dec_avg', 'clinch_strikes_landed_dec_avg', 'ground_strikes_landed_dec_avg',
+        'sig_strikes_landed_dec_avg', 'takedowns_landed_dec_avg'
+    }
+    
+    # 3. Dynamic Filter
+    feature_cols = [c for c in feature_cols if 
+                    '_attempted_' not in c and 
+                    c not in volume_to_drop and
+                    not (c.startswith('opponent_') and c not in {'opponent_name', 'opponent_id'})]
+
+    dropped_redundant = [c for c in feature_cols if c in redundant_exact_features]
+    if dropped_redundant:
+        feature_cols = [c for c in feature_cols if c not in redundant_exact_features]
+        print(f"   Dropped perfectly correlated/redundant features: {sorted(dropped_redundant)}")
     
     # Remove duplicates and sort
     feature_cols = sorted(list(set(feature_cols)))
