@@ -14,13 +14,8 @@ KAGGLE VERSION - All outputs saved to /kaggle/working
 """
 from __future__ import annotations
 
-# Install dependencies - works in both notebook and script mode
-import subprocess
+# Works in both notebook and script mode
 import sys
-# Install AutoGluon with ALL optional model types including TabPFN
-subprocess.check_call([sys.executable, "-m", "pip", "install", "autogluon.tabular[all]==1.5.0", "-q"])
-subprocess.check_call([sys.executable, "-m", "pip", "install", "tabpfn>=2.0", "tabdpt", "tabm", "-q"])
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "lightgbm", "-q"])
 
 import argparse
 import json
@@ -44,7 +39,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
+
+if os.path.exists('/kaggle'):
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "autogluon.tabular[all]==1.5.0", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tabpfn>=2.0", "tabdpt", "tabm", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow==15.0.2", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "lightgbm", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "fastcore>=1.8,<1.9", "-q"])
+
 from autogluon.tabular import TabularDataset, TabularPredictor
+
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc, precision_recall_fscore_support, precision_recall_curve, log_loss
 from sklearn.calibration import calibration_curve
 
@@ -148,6 +153,7 @@ def resolve_dataset_file(data_path: Path) -> Path:
 
     if data_path.is_dir():
         preferred_names = [
+            "ufc_fights_full_with_odds_updated.csv",
             "ufc_fights_full_with_odds.csv",  # NEW: Dataset with betting odds
             "ufc_fights_ml_updated.csv",
             "ufc_fights_ml.csv",
@@ -414,7 +420,9 @@ def generate_diagnostics(
     
     # Handle multiclass probability output (get prob of class 1)
     if isinstance(y_proba, pd.DataFrame):
-        y_proba = y_proba.iloc[:, 1]  # Assume binary class 1 is second column
+        # Medium-Risk Fix: Dynamically find the column representing class 1.0 or '1' instead of hardcoding iloc[:, 1]
+        pos_class_col = next((c for c in y_proba.columns if str(c) in ['1', '1.0', 1, 1.0]), y_proba.columns[1] if len(y_proba.columns) > 1 else y_proba.columns[0])
+        y_proba = y_proba[pos_class_col]
     
     # 2. Calibration Curve
     try:
@@ -474,11 +482,18 @@ def generate_diagnostics(
     except Exception as e:
         print(f"   Failed to generate PR Curve: {e}")
 
-# Add Kaggle utility script path for imports
+# Import the pipeline robustly (Kaggle or local)
 import sys
-sys.path.insert(0, '/kaggle/usr/lib/production_feature_pipeline_v2')
+import os
 
-import production_feature_pipeline_v2 as pipeline
+try:
+    if os.path.exists('/kaggle/usr/lib/production_feature_pipeline_v2'):
+        sys.path.insert(0, '/kaggle/usr/lib/production_feature_pipeline_v2')
+        import production_feature_pipeline_v2 as pipeline
+    else:
+        import kaggle_pipeline_for_results_2 as pipeline
+except ImportError:
+    import kaggle_pipeline_for_results_2 as pipeline
 
 def main(
     data_path: Path,
@@ -641,11 +656,14 @@ def main(
     # Removing all class weighting to let model learn natural probabilities
     print("Using uniform sample weights (1.0) for all rows")
     
-    # FIX: When randomization creates a perfect 50/50 split, idxmin() == idxmax() == 0.
-    # This cascades into threshold tuning and classification report, making the model
-    # appear to predict everything as class 0. Hardcode for binary win/loss prediction.
-    minority_label = 1   # positive class = Win
-    majority_label = 0   # negative class = Loss
+    # FIX: Dynamically determine majority/minority classes to prevent fragility if outcome encoding drifts
+    value_counts = train_ag_base['outcome'].value_counts()
+    if len(value_counts) == 2 and value_counts.iloc[0] == value_counts.iloc[1]:
+        minority_label = 1   # positive class = Win
+        majority_label = 0   # negative class = Loss
+    else:
+        majority_label = int(value_counts.idxmax())
+        minority_label = int(value_counts.idxmin())
 
     train_ag = train_ag_base.copy()
     val_ag = val_ag_base.copy()
@@ -1120,7 +1138,9 @@ def main(
             
             temp_df = df_target.copy()
             if isinstance(y_proba, pd.DataFrame):
-                temp_df['model_prob'] = y_proba.iloc[:, 1].values
+                # Medium-Risk Fix: Dynamically locate the positive class ('1' or 1.0) probability rather than hardcoding column index 1
+                pos_class_col = next((c for c in y_proba.columns if str(c) in ['1', '1.0', 1, 1.0]), y_proba.columns[1] if len(y_proba.columns) > 1 else y_proba.columns[0])
+                temp_df['model_prob'] = y_proba[pos_class_col].values
             else:
                 temp_df['model_prob'] = y_proba
                 

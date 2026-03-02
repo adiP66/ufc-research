@@ -62,10 +62,7 @@ def build_prefight_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     # 10. Merge Back & Create Differentials (SELECTIVE FEATURE FILTERING)
     df_final, feature_cols = _merge_and_create_differentials(df, long_df)
     
-    # 11. Final Cleanup
-    df_final = _final_cleanup(df_final, feature_cols)
-    
-    # 12. Chronological Experience Filter (Leakage-Safe)
+    # 11. Chronological Experience Filter (Leakage-Safe)
     # Remove fights from the training target where either fighter has fewer than 2 prior UFC fights.
     # We do this at the VERY END so their early fights are recorded in history arrays,
     # but the model is never trained to predict a fighter with volatile, low-sample features.
@@ -75,6 +72,9 @@ def build_prefight_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         removed_exp = len_before - len(df_final)
         if removed_exp > 0:
             print(f"   Removed {removed_exp} fights from training where a fighter had < 2 prior UFC fights")
+
+    # 12. Final Cleanup
+    df_final = _final_cleanup(df_final, feature_cols)
     
     print(f"=== PIPELINE COMPLETE: {len(feature_cols)} features generated ===")
     print("Feature layers included: *_ratio, *_dec_adjperf_dec_avg, *_dec_avg, ELO")
@@ -84,7 +84,9 @@ def build_prefight_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
 def _clean_and_sort(df: pd.DataFrame) -> pd.DataFrame:
     """Sorts data chronologically to ensure correct historical reconstruction."""
     df = df.copy()
-    df['event_date'] = pd.to_datetime(df['event_date'])
+    # High-Risk Fix: Use coercion to prevent hard-failures on bad date values
+    df['event_date'] = pd.to_datetime(df['event_date'], errors='coerce')
+    df = df.dropna(subset=['event_date'])
     df = df.sort_values(['event_date', 'fight_id']).reset_index(drop=True)
     df = df.dropna(subset=['fighter_a_name', 'fighter_b_name', 'event_date'])
     
@@ -93,6 +95,12 @@ def _clean_and_sort(df: pd.DataFrame) -> pd.DataFrame:
     if drop_cols:
         df = df.drop(columns=drop_cols)
         print(f"   Dropped potentially leaking or excluded columns: {drop_cols}")
+        
+    # LOGIC FIX: De-duplicate fights natively here instead of assuming the dataset is perfectly clean
+    len_before_dedupe = len(df)
+    df = df.drop_duplicates(subset=['fight_id'], keep='last')
+    if len_before_dedupe > len(df):
+        print(f"   Dropped {len_before_dedupe - len(df)} duplicate fight records")
         
     print(f"   Sorted {len(df)} fights chronologically")
     return df
@@ -143,17 +151,17 @@ def _compute_physical_ratios(long_df: pd.DataFrame) -> pd.DataFrame:
         return (a / (b + 1e-6)).fillna(1.0)
     
     if 'reach' in long_df.columns:
-        opp_reach = long_df[['fight_id', 'fighter_name', 'reach']].copy()
-        opp_reach.columns = ['fight_id', 'opponent_name', 'opp_reach']
-        long_df = long_df.merge(opp_reach, on=['fight_id', 'opponent_name'], how='left')
+        opp_reach = long_df[['fight_id', 'fighter_id', 'reach']].copy()
+        opp_reach.columns = ['fight_id', 'opponent_id', 'opp_reach']
+        long_df = long_df.merge(opp_reach, on=['fight_id', 'opponent_id'], how='left')
         long_df['reach_ratio'] = safe_div(long_df['reach'], long_df['opp_reach'])
     
     # NOTE: height_ratio removed - highly correlated with reach_ratio (r > 0.9)
         
     if 'age' in long_df.columns:
-        opp_age = long_df[['fight_id', 'fighter_name', 'age']].copy()
-        opp_age.columns = ['fight_id', 'opponent_name', 'opp_age']
-        long_df = long_df.merge(opp_age, on=['fight_id', 'opponent_name'], how='left')
+        opp_age = long_df[['fight_id', 'fighter_id', 'age']].copy()
+        opp_age.columns = ['fight_id', 'opponent_id', 'opp_age']
+        long_df = long_df.merge(opp_age, on=['fight_id', 'opponent_id'], how='left')
         long_df['age_ratio'] = safe_div(long_df['age'], long_df['opp_age'])
     
     print(f"   Computed physical attribute ratios (reach, age) - height removed")
@@ -162,6 +170,15 @@ def _compute_physical_ratios(long_df: pd.DataFrame) -> pd.DataFrame:
 
 def _convert_to_long_format(df: pd.DataFrame) -> pd.DataFrame:
     """Explodes wide dataframe into long format."""
+    def _normalize_fighter_id(raw_id: Any, fallback_name: str) -> str:
+        """Normalize fighter IDs and provide deterministic fallback when IDs are missing."""
+        if pd.isna(raw_id):
+            return f"name::{str(fallback_name).strip().lower()}"
+        raw_str = str(raw_id).strip()
+        if raw_str == "" or raw_str.lower() == "nan":
+            return f"name::{str(fallback_name).strip().lower()}"
+        return f"id::{raw_str}"
+
     fighter_a_cols = [col for col in df.columns if col.startswith('fighter_a_')]
     base_cols = set()
     for col in fighter_a_cols:
@@ -224,7 +241,9 @@ def _convert_to_long_format(df: pd.DataFrame) -> pd.DataFrame:
         rec_a = meta.copy()
         rec_a.update({
             'fighter_name': row.fighter_a_name,
+            'fighter_id': _normalize_fighter_id(getattr(row, 'fighter_a_id', np.nan), row.fighter_a_name),
             'opponent_name': row.fighter_b_name,
+            'opponent_id': _normalize_fighter_id(getattr(row, 'fighter_b_id', np.nan), row.fighter_b_name),
             'is_a': True,
             'win': win_a,
             'ko_tko_win': ko_win_a,
@@ -239,7 +258,9 @@ def _convert_to_long_format(df: pd.DataFrame) -> pd.DataFrame:
         rec_b = meta.copy()
         rec_b.update({
             'fighter_name': row.fighter_b_name,
+            'fighter_id': _normalize_fighter_id(getattr(row, 'fighter_b_id', np.nan), row.fighter_b_name),
             'opponent_name': row.fighter_a_name,
+            'opponent_id': _normalize_fighter_id(getattr(row, 'fighter_a_id', np.nan), row.fighter_a_name),
             'is_a': False,
             'win': win_b,
             'ko_tko_win': ko_win_b,
@@ -252,7 +273,7 @@ def _convert_to_long_format(df: pd.DataFrame) -> pd.DataFrame:
         records.append(rec_b)
         
     long_df = pd.DataFrame(records)
-    long_df = long_df.sort_values(['fighter_name', 'event_date', 'fight_id']).reset_index(drop=True)
+    long_df = long_df.sort_values(['fighter_id', 'event_date', 'fight_id']).reset_index(drop=True)
     print(f"   Converted to long format: {len(long_df)} records")
     return long_df
 
@@ -328,9 +349,9 @@ def _compute_ratio_features(long_df: pd.DataFrame) -> pd.DataFrame:
     # Scrambling efficiency: How often do you reverse when controlled?
     if 'reversals_dec_avg' in long_df.columns:
         # Need opponent's control time
-        opp_ctrl = long_df[['fight_id', 'fighter_name', 'control_time_per_fight_dec_avg']].copy()
-        opp_ctrl.columns = ['fight_id', 'opponent_name', 'opp_control_time']
-        long_df = long_df.merge(opp_ctrl, on=['fight_id', 'opponent_name'], how='left')
+        opp_ctrl = long_df[['fight_id', 'fighter_id', 'control_time_per_fight_dec_avg']].copy()
+        opp_ctrl.columns = ['fight_id', 'opponent_id', 'opp_control_time']
+        long_df = long_df.merge(opp_ctrl, on=['fight_id', 'opponent_id'], how='left')
         long_df['rev_per_ctrlopp'] = safe_div(long_df['reversals_dec_avg'], long_df['opp_control_time'] / 60.0)
         long_df = long_df.drop(columns=['opp_control_time'], errors='ignore')
     
@@ -370,13 +391,13 @@ def _compute_history_features(long_df: pd.DataFrame) -> pd.DataFrame:
             return df
             
         # We need the opponent's landed and attempted stats for defense calculations
-        opp = df[['fight_id', 'fighter_name'] + valid_stats].copy()
+        opp = df[['fight_id', 'fighter_id'] + valid_stats].copy()
         
-        # Rename so that fighter_name -> opponent_name for the merge
-        opp.columns = ['fight_id', 'opponent_name'] + [f'opp_{col}' for col in valid_stats]
+        # Rename so that fighter_id -> opponent_id for the merge
+        opp.columns = ['fight_id', 'opponent_id'] + [f'opp_{col}' for col in valid_stats]
         
         # Merge back onto the main df
-        df = df.merge(opp, on=['fight_id', 'opponent_name'], how='left')
+        df = df.merge(opp, on=['fight_id', 'opponent_id'], how='left')
         return df
 
     # Stats we need from the opponent to compute defense later
@@ -414,23 +435,28 @@ def _compute_history_features(long_df: pd.DataFrame) -> pd.DataFrame:
         long_df['takedown_defense'] = 1 - safe_div(long_df['opp_takedowns_landed'], long_df['opp_takedowns_attempted'])
         long_df['takedown_defense'] = long_df['takedown_defense'].clip(0, 1)
     
-    exclude = {'fight_id', 'event_date', 'fighter_name', 'opponent_name', 'is_a', 'weight_class', 'win', 'result', 
+    exclude = {'fight_id', 'event_date', 'fighter_name', 'fighter_id', 'opponent_name', 'opponent_id', 'is_a', 'weight_class', 'win', 'result', 
                'height', 'reach'}  # age removed from exclude to get age_dec_avg_diff
     numeric_cols = [c for c in long_df.columns if c not in exclude and pd.api.types.is_numeric_dtype(long_df[c])]
     
-    grouped = long_df.groupby('fighter_name', group_keys=False)
-    
+    grouped = long_df.groupby('fighter_id', group_keys=False)
+
+    history_feature_data = {}
     for col in numeric_cols:
         # Compute ALL layers (needed internally)
-        long_df[f'{col}_career_avg'] = grouped[col].transform(
+        history_feature_data[f'{col}_career_avg'] = grouped[col].transform(
             lambda x: x.shift(1).expanding().mean()
         ).fillna(0)
-        
-        long_df[f'{col}_dec_avg'] = grouped[col].transform(
+
+        history_feature_data[f'{col}_dec_avg'] = grouped[col].transform(
             lambda x: x.shift(1).ewm(alpha=0.15, min_periods=1).mean()
         ).fillna(0)
         
         # roll3 computation REMOVED - not used in final features
+
+    if history_feature_data:
+        long_df = pd.concat([long_df, pd.DataFrame(history_feature_data, index=long_df.index)], axis=1)
+        grouped = long_df.groupby('fighter_id', group_keys=False)
     # Win Rate - LEAKAGE SAFE: shift(1) ensures current fight outcome is EXCLUDED
     # win_rate represents fighter's record BEFORE this fight, not including it
     # This feature is used internally for SOS calculation but NOT included in final model features
@@ -530,12 +556,10 @@ def _compute_opponent_adjusted_features(long_df: pd.DataFrame) -> pd.DataFrame:
     else:
         wc_grouper = 'weight_class'
 
-    # Prepare Priors Dictionary
-    wc_priors = {}
-    
     # We need to calculate what opponents ALLOW, so we use the 'allowed_' columns concept
     # But for the Prior, we can just use the distribution of the stat itself across the weight class
     # "Average Takedowns Per Minute in Lightweight" is a good proxy for "Average Allowed TD/Min in LW"
+    wc_prior_data = {}
     for base in base_stats:
         if base in long_df.columns:
             # Global median/MAD per weight class (using EXPANDING window to prevent leakage)
@@ -578,45 +602,58 @@ def _compute_opponent_adjusted_features(long_df: pd.DataFrame) -> pd.DataFrame:
             wc_median = wc_median.fillna(0)
             wc_std = wc_std.fillna(1.0).replace(0, 1e-6)
             
-            long_df[f'{base}_wc_mean'] = wc_median
-            long_df[f'{base}_wc_std'] = wc_std
+            wc_prior_data[f'{base}_wc_mean'] = wc_median
+            wc_prior_data[f'{base}_wc_std'] = wc_std
+
+    if wc_prior_data:
+        long_df = pd.concat([long_df, pd.DataFrame(wc_prior_data, index=long_df.index)], axis=1)
 
     # === STEP 2: Calculate Opponent Statistics (History) ===
-    opp_stats = long_df[['fight_id', 'event_date', 'opponent_name']].copy()
-    for base in base_stats:
-        if base in long_df.columns:
-            opp_stats[f'allowed_{base}'] = long_df[base]
-            
-    opp_stats = opp_stats.sort_values(['opponent_name', 'event_date', 'fight_id'])
-    grouped_opp = opp_stats.groupby('opponent_name', group_keys=False)
-    
+    # Memory-optimized path: preserve legacy semantics (group by opponent_id)
+    # but avoid building a wide temporary DataFrame and expensive merge.
+    available_base_stats = [base for base in base_stats if base in long_df.columns]
+    opp_order = long_df.sort_values(['opponent_id', 'event_date', 'fight_id']).index
+    opp_history = long_df.loc[opp_order, ['opponent_id'] + available_base_stats].copy()
+    grouped_opp = opp_history.groupby('opponent_id', group_keys=False)
+
     # Track Sample Size (n) for Shrinkage
-    # How many times has this opponent fought before this fight?
-    opp_stats['opp_n_fights'] = grouped_opp.cumcount() 
-    
-    for base in base_stats:
-        col_allowed = f'allowed_{base}'
-        if col_allowed not in opp_stats.columns:
-            continue
-        
+    # How many times has this opponent appeared before this fight?
+    opp_history['opp_n_fights'] = grouped_opp.cumcount()
+    opp_feature_data = {}
+
+    opp_n = np.zeros(len(long_df), dtype=float)
+    opp_n[opp_order.to_numpy()] = opp_history['opp_n_fights'].to_numpy(dtype=float)
+    opp_feature_data['opp_n_fights'] = opp_n
+
+    for base in available_base_stats:
         # Opponent Mean (EWM) - Shifted to avoid leakage
-        opp_stats[f'{base}_opp_allowed'] = grouped_opp[col_allowed].transform(
+        opp_allowed_hist = grouped_opp[base].transform(
             lambda x: x.shift(1).ewm(alpha=0.15, min_periods=1).mean()
         )
-        
+
         # Opponent STD (Rolling 5) - Shifted
-        opp_stats[f'{base}_opp_std'] = grouped_opp[col_allowed].transform(
+        opp_std_hist = grouped_opp[base].transform(
             lambda x: x.shift(1).rolling(window=5, min_periods=2).std()
-        ).fillna(1.0) # FillNa will be handled by shrinkage
-        
-    merge_cols = ['fight_id', 'opponent_name', 'opp_n_fights'] + \
-                 [c for c in opp_stats.columns if c.endswith('_opp_allowed') or c.endswith('_opp_std')]
-                 
-    long_df = long_df.merge(opp_stats[merge_cols], on=['fight_id', 'opponent_name'], how='left')
+        ).fillna(1.0)  # FillNa will be handled by shrinkage
+
+        allowed_col = f'{base}_opp_allowed'
+        std_col = f'{base}_opp_std'
+
+        allowed_arr = np.full(len(long_df), np.nan, dtype=float)
+        std_arr = np.full(len(long_df), np.nan, dtype=float)
+        allowed_arr[opp_order.to_numpy()] = opp_allowed_hist.to_numpy(dtype=float)
+        std_arr[opp_order.to_numpy()] = opp_std_hist.to_numpy(dtype=float)
+
+        opp_feature_data[allowed_col] = allowed_arr
+        opp_feature_data[std_col] = std_arr
+
+    if opp_feature_data:
+        long_df = pd.concat([long_df, pd.DataFrame(opp_feature_data, index=long_df.index)], axis=1)
     
     # === STEP 3: Bayesian Shrinkage & Z-Score Calc ===
     K_shrink = 3.0 # Bayesian Prior Strength (Adjustable: 3-5 is typical)
     
+    zscore_raw_data = {}
     for base in base_stats:
         # Columns
         obs_col = f'{base}_dec_avg' if f'{base}_dec_avg' in long_df.columns else base
@@ -646,26 +683,32 @@ def _compute_opponent_adjusted_features(long_df: pd.DataFrame) -> pd.DataFrame:
             # Robust Z-Score of the ACTUAL fight performance
             # How well did the fighter do in THIS specific fight compared to opponent's expectation?
             z_col = f'{base}_zscore_raw'
-            long_df[z_col] = (long_df[base] - mu_shrunk) / std_shrunk
-            long_df[z_col] = long_df[z_col].clip(-7, 7)
+            zscore_raw_data[z_col] = ((long_df[obs_col] - mu_shrunk) / std_shrunk).clip(-7, 7)
+
+    if zscore_raw_data:
+        long_df = pd.concat([long_df, pd.DataFrame(zscore_raw_data, index=long_df.index)], axis=1)
 
     # === FINAL LAYER: EWM of the Raw Z-Scores ===
     # We take the pre-fight trend of how well the fighter beats expected performance
     # LEAKAGE GUARD: shift(1) guarantees the current fight's Z-score is EXCLUDED
-    grouped = long_df.groupby('fighter_name', group_keys=False)
+    grouped = long_df.groupby('fighter_id', group_keys=False)
+    zscore_decayed_data = {}
     for base in base_stats:
         z_col = f'{base}_zscore_raw'
         if z_col in long_df.columns:
-            long_df[f'{base}_dec_adjperf_dec_avg'] = grouped[z_col].transform(
+            zscore_decayed_data[f'{base}_dec_adjperf_dec_avg'] = grouped[z_col].transform(
                 lambda x: x.shift(1).ewm(alpha=0.15, min_periods=1).mean()
             ).fillna(0).clip(-7, 7)
+
+    if zscore_decayed_data:
+        long_df = pd.concat([long_df, pd.DataFrame(zscore_decayed_data, index=long_df.index)], axis=1)
     
     # SOS Calculation (Unchanged)
-    opp_quality = long_df[['fight_id', 'fighter_name', 'win_rate']].copy()
-    opp_quality.columns = ['fight_id', 'opponent_name', 'opp_win_rate']
-    long_df = long_df.merge(opp_quality, on=['fight_id', 'opponent_name'], how='left')
-    long_df = long_df.sort_values(['fighter_name', 'event_date', 'fight_id'])
-    grouped = long_df.groupby('fighter_name', group_keys=False)
+    opp_quality = long_df[['fight_id', 'fighter_id', 'win_rate']].copy()
+    opp_quality.columns = ['fight_id', 'opponent_id', 'opp_win_rate']
+    long_df = long_df.merge(opp_quality, on=['fight_id', 'opponent_id'], how='left')
+    long_df = long_df.sort_values(['fighter_id', 'event_date', 'fight_id'])
+    grouped = long_df.groupby('fighter_id', group_keys=False)
     long_df['sos_ewm'] = grouped['opp_win_rate'].transform(
         lambda x: x.shift(1).ewm(alpha=0.15, min_periods=1).mean()
     ).fillna(0.5)
@@ -748,7 +791,7 @@ def _compute_elo_ratings(long_df: pd.DataFrame) -> pd.DataFrame:
     fight_ids = long_df['fight_id'].unique()
     
     # Build a lookup for each row's position
-    row_to_idx = {(row.fight_id, row.fighter_name): idx 
+    row_to_idx = {(row.fight_id, row.fighter_id): idx 
                   for idx, row in long_df.iterrows()}
     
     # Initialize arrays
@@ -762,8 +805,8 @@ def _compute_elo_ratings(long_df: pd.DataFrame) -> pd.DataFrame:
         if len(fight_rows) != 2:
             continue
             
-        fighter_a = fight_rows.iloc[0]['fighter_name']
-        fighter_b = fight_rows.iloc[1]['fighter_name']
+        fighter_a = fight_rows.iloc[0]['fighter_id']
+        fighter_b = fight_rows.iloc[1]['fighter_id']
         
         # Get PRE-FIGHT Elo (before this fight happens)
         elo_a = fighter_elo.get(fighter_a, BASE_ELO)
@@ -984,11 +1027,13 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
     df_final = df_final.merge(long_b, on='fight_id', how='left')
     
     # Diff
-    final_cols = []
-    for col in feature_cols:
-        diff_name = f'{col}_diff'
-        df_final[diff_name] = df_final[f'A_{col}'] - df_final[f'B_{col}']
-        final_cols.append(diff_name)
+    final_cols = [f'{col}_diff' for col in feature_cols]
+    if feature_cols:
+        a_cols = [f'A_{col}' for col in feature_cols]
+        b_cols = [f'B_{col}' for col in feature_cols]
+        diff_values = df_final[a_cols].to_numpy(dtype=float) - df_final[b_cols].to_numpy(dtype=float)
+        diff_df = pd.DataFrame(diff_values, columns=final_cols, index=df_final.index)
+        df_final = pd.concat([df_final, diff_df], axis=1)
     
     # === SPECIAL ELO FEATURES ===
     if 'A_elo' in df_final.columns and 'B_elo' in df_final.columns:
