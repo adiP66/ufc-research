@@ -1057,10 +1057,69 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
         
         print(f"   Added Elo-derived features: elo_diff_squared, elo_win_prob")
     
+    # =======================================================================
+    # COLLINEARITY PRUNING (Draft 16): Drop features with Pearson r > 0.95
+    # Based on automated analysis of feature_correlation_matrix.csv
+    # =======================================================================
+    collinearity_drops = [
+        # --- IDENTICAL MATH (r = 1.000) ---
+        # distance_per_sig_str is mathematically identical to distance_land_ratio
+        'distance_per_sig_str_diff',
+        'distance_per_sig_str_dec_adjperf_dec_avg_diff',
+        
+        # --- PRICING OVERLAP (r > 0.99) ---
+        # opening_odds_diff and implied_prob_A are trivial transforms of A/B raw odds
+        'opening_odds_diff',
+        'implied_prob_A',
+        
+        # --- ELO OVERLAP (r = 0.992) ---
+        # elo_win_prob is a sigmoid of elo_diff; keep elo_diff + elo_diff_squared
+        'elo_win_prob',
+        
+        # --- "ATTEMPTED vs LANDED" LOOP (r = 0.95-0.99) ---
+        # Keep _landed (damage), drop _attempted (volume noise)
+        'leg_strikes_attempted_dec_avg_diff',
+        'leg_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'ground_strikes_attempted_dec_avg_diff',
+        'ground_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'clinch_strikes_attempted_dec_avg_diff',
+        'clinch_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'body_strikes_attempted_dec_avg_diff',
+        'body_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'sig_strikes_attempted_dec_avg_diff',
+        'sig_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'distance_strikes_attempted_dec_avg_diff',
+        'distance_strikes_attempted_dec_adjperf_dec_avg_diff',
+        # Opponent _attempted variants
+        'opp_leg_strikes_attempted_dec_avg_diff',
+        'opp_leg_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'opp_body_strikes_attempted_dec_avg_diff',
+        'opp_body_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'opp_head_strikes_attempted_dec_avg_diff',
+        'opp_head_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'opp_sig_strikes_attempted_dec_avg_diff',
+        'opp_sig_strikes_attempted_dec_adjperf_dec_avg_diff',
+        
+        # --- "HEAD ≈ SIG" OVERLAP (r = 0.97-0.98) ---
+        # ~80% of significant strikes ARE head strikes; keep sig_strikes
+        'head_strikes_attempted_dec_avg_diff',
+        'head_strikes_attempted_dec_adjperf_dec_avg_diff',
+        'head_strikes_landed_dec_avg_diff',
+        'head_strikes_landed_dec_adjperf_dec_avg_diff',
+    ]
+    
+    dropped = [c for c in collinearity_drops if c in final_cols]
+    final_cols = [c for c in final_cols if c not in collinearity_drops]
+    # Also drop from the DataFrame itself
+    df_final = df_final.drop(columns=[c for c in collinearity_drops if c in df_final.columns], errors='ignore')
+    print(f"   COLLINEARITY PRUNING: Dropped {len(dropped)} redundant features (Pearson r > 0.95)")
+    
     # CRITICAL: Add odds features to final_cols so _final_cleanup doesn't drop them
     if existing_odds:
-        final_cols.extend(existing_odds)
-        print(f"   Preserved betting odds features: {existing_odds}")
+        # Don't re-add the ones we just pruned
+        surviving_odds = [c for c in existing_odds if c not in collinearity_drops]
+        final_cols.extend(surviving_odds)
+        print(f"   Preserved betting odds features: {surviving_odds}")
             
     return df_final, final_cols
 

@@ -751,7 +751,7 @@ def main(
                 'RF': {},            # Random Forest
                 'XT': {},            # Extra Trees
                 'KNN': {},           # K-Nearest Neighbors
-                'LR': {},            # Logistic Regression
+                # 'LR' excluded: crashes on Kaggle due to numpy._core.numeric deserialization bug
                 'REALTABPFN-V2': {}, # TabPFN
                 'TABM': {},          # TabM (neural)
                 'TABDPT': {},        # TabDPT (neural)
