@@ -14,13 +14,8 @@ KAGGLE VERSION - All outputs saved to /kaggle/working
 """
 from __future__ import annotations
 
-# Install dependencies - works in both notebook and script mode
-import subprocess
+# Works in both notebook and script mode
 import sys
-# Install AutoGluon with ALL optional model types including TabPFN
-subprocess.check_call([sys.executable, "-m", "pip", "install", "autogluon.tabular[all]==1.5.0", "-q"])
-subprocess.check_call([sys.executable, "-m", "pip", "install", "tabpfn>=2.0", "tabdpt", "tabm", "-q"])
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "lightgbm", "-q"])
 
 import argparse
 import json
@@ -44,10 +39,21 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
+
+if os.path.exists('/kaggle'):
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "autogluon.tabular[all]==1.5.0", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tabpfn>=2.0", "tabdpt", "tabm", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow==15.0.2", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "lightgbm", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "fastcore>=1.8,<1.9", "-q"])
+
 from autogluon.tabular import TabularDataset, TabularPredictor
+
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc, precision_recall_fscore_support, precision_recall_curve, log_loss
 from sklearn.calibration import calibration_curve
 
+# KAGGLE VERSION: No Azure ML imports needed
 
 # ============================================================================
 # EXCLUDED FEATURES - Remove these features (negative importance in Dec 24/Feb 25 analysis)
