@@ -54,30 +54,29 @@ from sklearn.calibration import calibration_curve
 # EXCLUDED FEATURES - Remove these features (negative importance in Dec 24/Feb 25 analysis)
 # ============================================================================
 EXCLUDED_FEATURES = [
-    # Confirmed noise — keep excluded
-    'age_dec_avg_diff',                             # age_ratio_diff (#3) is better
-    'opp_reach_dec_avg_diff',                       # opponent reach is uncontrollable noise
-    'ko_tko_win_dec_avg_diff',                      # ko_tko_win_rate_diff captures this better
-    'days_since_last_fight_dec_adjperf_dec_avg_diff', # raw days_since_last_fight_diff exists
-    'ctrl_per_min_dec_adjperf_dec_avg_diff',         # ctrl_per_min_diff is sufficient
-    'reversals_dec_avg_diff',                        # reversals_dec_adjperf_dec_avg_diff is better
+    # Confirmed negative importance (validated on V2 pipeline, Feb 25)
+    'age_dec_avg_diff',
+    'body_strikes_attempted_dec_adjperf_dec_avg_diff',
+    'head_strikes_landed_dec_adjperf_dec_avg_diff',
+    'control_time_per_fight_career_avg_dec_adjperf_dec_avg_diff',
+    'opp_reach_dec_avg_diff',
+    'distance_strikes_attempted_dec_adjperf_dec_avg_diff',
+    'leg_land_ratio_dec_adjperf_dec_avg_diff',
+    'ground_strikes_landed_dec_adjperf_dec_avg_diff',
+    'sig_strikes_landed_per_min_career_avg_dec_adjperf_dec_avg_diff',
+    'ko_tko_win_dec_avg_diff',
+    'leg_land_ratio_diff',
+    'ground_strikes_attempted_dec_adjperf_dec_avg_diff',
+    # Redundant: pure math transform of A_open_odds
+    'implied_prob_A',
     
-    # NOTE: The following were previously excluded but are now handled by
-    # collinearity pruning in kaggle_pipeline_for_results_2.py:
-    # - body_strikes_attempted_dec_adjperf_dec_avg_diff (collinearity drop)
-    # - head_strikes_landed_dec_adjperf_dec_avg_diff (collinearity drop)
-    # - distance_strikes_attempted_dec_adjperf_dec_avg_diff (collinearity drop)
-    # - ground_strikes_attempted_dec_adjperf_dec_avg_diff (collinearity drop)
-    # - implied_prob_A (collinearity drop)
-    # - control_time_per_fight_career_avg_* (layer removed from pipeline)
-    # - sig_strikes_landed_per_min_career_avg_* (layer removed from pipeline)
-    
-    # NOTE: The following were RE-ADDED to the model (Draft 20):
-    # - leg_land_ratio_dec_adjperf_dec_avg_diff (leg targeting signal)
-    # - leg_land_ratio_diff (leg targeting signal)
-    # - ground_strikes_landed_dec_adjperf_dec_avg_diff (grappling signal)
-    # - sig_str_acc_dec_adjperf_dec_avg_diff (opponent-adjusted accuracy)
-    # - round1_sig_strikes_landed_dec_adjperf_dec_avg_diff (R1 aggression signal)
+    # Newly discovered negative importance features (Draft 13/14 Updates)
+    'days_since_last_fight_dec_adjperf_dec_avg_diff',
+    'sig_str_acc_dec_adjperf_dec_avg_diff',
+    'round1_sig_strikes_landed_dec_adjperf_dec_avg_diff',
+    'ctrl_per_min_dec_adjperf_dec_avg_diff',
+    'reversals_dec_avg_diff',
+    'distance_acc_dec_adjperf_dec_avg_diff',
 ]
 print(f"Will EXCLUDE {len(EXCLUDED_FEATURES)} negative features from training")
 
@@ -746,13 +745,13 @@ def main(
                 'XGB': {},           # XGBoost
                 'RF': {},            # Random Forest
                 'XT': {},            # Extra Trees
-                # 'KNN' excluded: log_loss ~1.27 (worse than random)
+                'KNN': {},           # K-Nearest Neighbors
                 # 'LR' excluded: crashes on Kaggle due to numpy._core.numeric deserialization bug
-                'REALTABPFN-V2': {}, # TabPFN (best individual model)
-                'TABM': {},          # TabM (tightest val-test gap of neural models)
-                # 'TABDPT' excluded: highest val-test gap (0.020), transformer memorizes on small data
-                # 'NN_TORCH' excluded: redundant with TabM, higher overfit (0.013 vs 0.006 gap)
-                # 'FASTAI' excluded: worst neural model, never makes it into ensemble
+                'REALTABPFN-V2': {}, # TabPFN
+                'TABM': {},          # TabM (neural)
+                'TABDPT': {},        # TabDPT (neural)
+                'NN_TORCH': {},      # Neural Network
+                'FASTAI': {},        # FastAI Neural Network
             },
             ag_args_fit={"num_gpus": num_gpu} if num_gpu is not None else None,
         )
