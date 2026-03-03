@@ -17,10 +17,20 @@ from __future__ import annotations
 # Install dependencies - works in both notebook and script mode
 import subprocess
 import sys
-# Install AutoGluon with ALL optional model types including TabPFN
-subprocess.check_call([sys.executable, "-m", "pip", "install", "autogluon.tabular[all]==1.5.0", "-q"])
-subprocess.check_call([sys.executable, "-m", "pip", "install", "tabpfn>=2.0", "tabdpt", "tabm", "-q"])
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "lightgbm", "-q"])
+import os
+
+
+def _is_kaggle_runtime() -> bool:
+    return os.path.exists('/kaggle') or 'KAGGLE_KERNEL_RUN_TYPE' in os.environ
+
+
+if _is_kaggle_runtime():
+    # Install AutoGluon with optional model types including TabPFN.
+    # Pin pyarrow for LightGBM compatibility in Kaggle images.
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "autogluon.tabular[all]==1.5.0", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tabpfn>=2.0", "tabdpt", "tabm", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "lightgbm", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow==15.0.2", "-q"])
 
 import argparse
 import json
@@ -54,29 +64,7 @@ from sklearn.calibration import calibration_curve
 # EXCLUDED FEATURES - Remove these features (negative importance in Dec 24/Feb 25 analysis)
 # ============================================================================
 EXCLUDED_FEATURES = [
-    # Confirmed negative importance (validated on V2 pipeline, Feb 25)
-    'age_dec_avg_diff',
-    'body_strikes_attempted_dec_adjperf_dec_avg_diff',
-    'head_strikes_landed_dec_adjperf_dec_avg_diff',
-    'control_time_per_fight_career_avg_dec_adjperf_dec_avg_diff',
-    'opp_reach_dec_avg_diff',
-    'distance_strikes_attempted_dec_adjperf_dec_avg_diff',
-    'leg_land_ratio_dec_adjperf_dec_avg_diff',
-    'ground_strikes_landed_dec_adjperf_dec_avg_diff',
-    'sig_strikes_landed_per_min_career_avg_dec_adjperf_dec_avg_diff',
-    'ko_tko_win_dec_avg_diff',
-    'leg_land_ratio_diff',
-    'ground_strikes_attempted_dec_adjperf_dec_avg_diff',
-    # Redundant: pure math transform of A_open_odds
-    'implied_prob_A',
-    
-    # Newly discovered negative importance features (Draft 13/14 Updates)
-    'days_since_last_fight_dec_adjperf_dec_avg_diff',
-    'sig_str_acc_dec_adjperf_dec_avg_diff',
-    'round1_sig_strikes_landed_dec_adjperf_dec_avg_diff',
-    'ctrl_per_min_dec_adjperf_dec_avg_diff',
-    'reversals_dec_avg_diff',
-    'distance_acc_dec_adjperf_dec_avg_diff',
+    # ALL EXCLUSIONS REMOVED — letting the model see everything (Draft 21 experiment)
 ]
 print(f"Will EXCLUDE {len(EXCLUDED_FEATURES)} negative features from training")
 
@@ -413,10 +401,12 @@ def generate_diagnostics(
     y_pred = predictor.predict(test_data)
     y_proba = predictor.predict_proba(test_data)
     
-    # Handle multiclass probability output (get prob of class 1)
+    # Handle multiclass probability output safely using the model's actual class definitions
     if isinstance(y_proba, pd.DataFrame):
-        # Medium-Risk Fix: Dynamically find the column representing class 1.0 or '1' instead of hardcoding iloc[:, 1]
-        pos_class_col = next((c for c in y_proba.columns if str(c) in ['1', '1.0', 1, 1.0]), y_proba.columns[1] if len(y_proba.columns) > 1 else y_proba.columns[0])
+        # Guarantee we fetch whatever label the model intrinsically uses for "Win/Positive"
+        predicted_classes = list(predictor.class_labels) if hasattr(predictor, "class_labels") else list(y_proba.columns)
+        # Use fallback only if the class list lacks typical names; standard is index [1] (or max element for binary 0/1)
+        pos_class_col = predicted_classes[1] if len(predicted_classes) > 1 else predicted_classes[0]
         y_proba = y_proba[pos_class_col]
     
     # 2. Calibration Curve
@@ -479,7 +469,6 @@ def generate_diagnostics(
 
 # Import the pipeline robustly (Kaggle or local)
 import sys
-import os
 
 try:
     if os.path.exists('/kaggle/usr/lib/production_feature_pipeline_v2'):
@@ -614,28 +603,27 @@ def main(
     swap_1 = rng.choice(class_1_idx, size=len(class_1_idx) // 2, replace=False)
     swap_mask = train_ag_base.index.isin(set(swap_0) | set(swap_1))
     
-    # Negate all differential features for swapped rows
+    # Safe negation of ALL differential strings without hardcoding aliases (except non-diff odds)
+    diff_cols = [c for c in train_ag_base.columns if c.endswith('_diff')]
     train_ag_base.loc[swap_mask, diff_cols] = -train_ag_base.loc[swap_mask, diff_cols]
+    
     # Flip outcome
     train_ag_base.loc[swap_mask, 'outcome'] = 1.0 - train_ag_base.loc[swap_mask, 'outcome']
-    # Swap A/B odds
+    
+    # Explicitly swap direct A/B features securely
     if 'A_open_odds' in train_ag_base.columns and 'B_open_odds' in train_ag_base.columns:
         temp_odds = train_ag_base.loc[swap_mask, 'A_open_odds'].copy()
         train_ag_base.loc[swap_mask, 'A_open_odds'] = train_ag_base.loc[swap_mask, 'B_open_odds']
         train_ag_base.loc[swap_mask, 'B_open_odds'] = temp_odds
         
-    # FIX 1: opening_odds_diff ends in _diff, so it was ALREADY negated by diff_cols. 
-    # Do not negate it again!
-    
-    # FIX 2: implied_prob_A does NOT end in _diff, so flip it here
+    # FIX: Ensure non-diff calculated A/B columns are reversed safely
     if 'implied_prob_A' in train_ag_base.columns:
         train_ag_base.loc[swap_mask, 'implied_prob_A'] = 1.0 - train_ag_base.loc[swap_mask, 'implied_prob_A']
         
-    # FIX 3: elo_diff_squared ends in _squared, so it was missed by diff_cols. Negate it here.
     if 'elo_diff_squared' in train_ag_base.columns:
+        # Since this wasn't matched by `_diff` suffix but is a strict differential measure
         train_ag_base.loc[swap_mask, 'elo_diff_squared'] = -train_ag_base.loc[swap_mask, 'elo_diff_squared']
         
-    # FIX 4: elo_win_prob does NOT end in _diff, so flip it here
     if 'elo_win_prob' in train_ag_base.columns:
         train_ag_base.loc[swap_mask, 'elo_win_prob'] = 1.0 - train_ag_base.loc[swap_mask, 'elo_win_prob']
     
@@ -745,7 +733,7 @@ def main(
                 'XGB': {},           # XGBoost
                 'RF': {},            # Random Forest
                 'XT': {},            # Extra Trees
-                'KNN': {},           # K-Nearest Neighbors
+                # 'KNN' excluded: log_loss ~1.30 (worse than random)
                 # 'LR' excluded: crashes on Kaggle due to numpy._core.numeric deserialization bug
                 'REALTABPFN-V2': {}, # TabPFN
                 'TABM': {},          # TabM (neural)
@@ -844,9 +832,18 @@ def main(
                         return np.asarray(proba_obj)
                     return 1.0 - np.asarray(proba_obj)
                 array = np.asarray(proba_obj)
-                if len(class_labels) == 2 and class_labels[1] == positive_label:
-                    return array
-                return 1.0 - array
+                if array.ndim == 2 and array.shape[1] == 2:
+                    pos_idx = 1
+                    for idx, label in enumerate(class_labels):
+                        if str(label) == str(positive_label):
+                            pos_idx = idx
+                            break
+                    return array[:, pos_idx]
+                if array.ndim == 1:
+                    if len(class_labels) == 2 and str(class_labels[1]) == str(positive_label):
+                        return array
+                    return 1.0 - array
+                raise ValueError(f"Unexpected probability output shape: {array.shape}")
 
             positive_scores_val = _extract_scores(proba_val)
             positive_scores_test = _extract_scores(proba_test)

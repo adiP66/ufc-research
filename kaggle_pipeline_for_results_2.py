@@ -508,7 +508,7 @@ def _compute_history_features(long_df: pd.DataFrame) -> pd.DataFrame:
     # DAYS SINCE LAST FIGHT: Kept as a raw chronological measure, EWM disabled to prevent noise.
     
     print(f"   Computed history features (Career, EWM, Roll3) for {len(numeric_cols)} metrics")
-    print(f"   Added: total_fights, win_streak, sig_strike_defense, takedown_defense")
+    print(f"   Added: total_fights, win_streak, ko_tko_win_rate, decision_win_rate")
     long_df = long_df.drop(columns=['career_wins', 'career_fights'], errors='ignore')
     # NOTE: 'win' column is kept for Elo calculation - will be dropped after
     return long_df
@@ -1058,6 +1058,14 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
         # --- ELO OVERLAP (r = 0.992) ---
         # elo_win_prob is a sigmoid of elo_diff; keep elo_diff + elo_diff_squared
         'elo_win_prob',
+
+        # --- EXACT LINEAR DEPENDENCIES (rank-deficient design) ---
+        # head/body/leg land ratios sum to 1 per fighter -> their diffs sum to 0
+        'body_land_ratio_diff',
+        # distance/clinch/ground land ratios sum to 1 per fighter -> their diffs sum to 0
+        'ground_land_ratio_diff',
+        # total sig landed is near-deterministic from component landed channels
+        'sig_strikes_landed_dec_avg_diff',
         
         # --- "ATTEMPTED vs LANDED" LOOP (r = 0.95-0.99) ---
         # Keep _landed (damage), drop _attempted (volume noise)
@@ -1110,6 +1118,18 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
     df_final = df_final.drop(columns=[c for c in collinearity_drops if c in df_final.columns], errors='ignore')
     print(f"   COLLINEARITY PRUNING: Dropped {len(dropped)} redundant features (Pearson r > 0.95)")
     
+    # FIX: Catch any remaining raw attempted/landed variables to solve Infinite VIF and reduce tree capacity.
+    # We rely entirely on the accuracy (_acc), ratio (_ratio), and defensive (_def_dec_avg) features instead.
+    remaining_collinear_volume = [
+        c for c in final_cols if
+        (('_attempted' in c) or ('_landed' in c)) and
+        (not c.startswith('distance_per_sig_str'))
+    ]
+    if remaining_collinear_volume:
+        final_cols = [c for c in final_cols if c not in remaining_collinear_volume]
+        df_final = df_final.drop(columns=[c for c in remaining_collinear_volume if c in df_final.columns], errors='ignore')
+        print(f"   Dropped {len(remaining_collinear_volume)} remaining raw attempted/landed features to fix infinite VIF")
+
     # CRITICAL: Add odds features to final_cols so _final_cleanup doesn't drop them
     if existing_odds:
         # Don't re-add the ones we just pruned
