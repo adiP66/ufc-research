@@ -306,6 +306,25 @@ def _compute_ratio_features(long_df: pd.DataFrame) -> pd.DataFrame:
     if 'takedowns_landed_dec_avg' in long_df.columns and 'takedowns_attempted_dec_avg' in long_df.columns:
         long_df['td_acc'] = safe_div(long_df['takedowns_landed_dec_avg'], long_df['takedowns_attempted_dec_avg'])
 
+    # ===== DEFENSE: "Ratio of Averages" (Draft 19 Fix) =====
+    # Uses EWM-smoothed opponent volume (opp_*_dec_avg) to compute defense.
+    # This correctly weights high-volume fights over low-volume ones,
+    # unlike the old per-fight ratio approach which weighted all fights equally.
+    if 'opp_sig_strikes_landed_dec_avg' in long_df.columns and 'opp_sig_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['sig_strike_defense'] = (1 - safe_div(long_df['opp_sig_strikes_landed_dec_avg'], long_df['opp_sig_strikes_attempted_dec_avg'])).clip(0, 1)
+
+    if 'opp_head_strikes_landed_dec_avg' in long_df.columns and 'opp_head_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['head_def'] = (1 - safe_div(long_df['opp_head_strikes_landed_dec_avg'], long_df['opp_head_strikes_attempted_dec_avg'])).clip(0, 1)
+
+    if 'opp_body_strikes_landed_dec_avg' in long_df.columns and 'opp_body_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['body_def'] = (1 - safe_div(long_df['opp_body_strikes_landed_dec_avg'], long_df['opp_body_strikes_attempted_dec_avg'])).clip(0, 1)
+
+    if 'opp_leg_strikes_landed_dec_avg' in long_df.columns and 'opp_leg_strikes_attempted_dec_avg' in long_df.columns:
+        long_df['leg_def'] = (1 - safe_div(long_df['opp_leg_strikes_landed_dec_avg'], long_df['opp_leg_strikes_attempted_dec_avg'])).clip(0, 1)
+
+    if 'opp_takedowns_landed_dec_avg' in long_df.columns and 'opp_takedowns_attempted_dec_avg' in long_df.columns:
+        long_df['takedown_defense'] = (1 - safe_div(long_df['opp_takedowns_landed_dec_avg'], long_df['opp_takedowns_attempted_dec_avg'])).clip(0, 1)
+
     # KD per sig strike landed (Power)
     if 'knockdowns_dec_avg' in long_df.columns and 'sig_strikes_landed_dec_avg' in long_df.columns:
         long_df['kd_per_sig_str'] = safe_div(long_df['knockdowns_dec_avg'], long_df['sig_strikes_landed_dec_avg'])
@@ -965,11 +984,10 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
                   'ctrl_per_min', 'distance_acc', 'leg_land_per_min',
                   'distance_per_sig_str', 'td_per_sig_att',
                   'ground_land_per_ctrl', 'td_land_per_ctrl', 'rev_per_ctrlopp',
+                  # Defense features (Draft 19: computed as Ratio of Averages)
+                  'sig_strike_defense', 'head_def', 'body_def', 'leg_def', 'takedown_defense',
                   # ELO features
                   'elo', 'elo_trend'}
-    # NOTE: Raw per-fight defense columns (sig_strike_defense, head_def, body_def, leg_def,
-    # takedown_defense) are EXCLUDED from keep_meta — they contain THIS fight's data (leakage!).
-    # Only their _dec_avg versions (shifted EWM, no leakage) are kept via the _dec_avg suffix pattern.
     drop_raw = [c for c in long_df.columns if not (
         c.endswith('_ratio') or 
         c.endswith('_acc') or 
@@ -999,6 +1017,8 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
                      'ctrl_per_min', 'distance_acc', 'leg_land_per_min',
                      'distance_per_sig_str', 'td_per_sig_att',
                      'ground_land_per_ctrl', 'td_land_per_ctrl', 'rev_per_ctrlopp',
+                     # Defense features (Draft 19: Ratio of Averages — safe, uses shifted EWM inputs)
+                     'sig_strike_defense', 'head_def', 'body_def', 'leg_def', 'takedown_defense',
                      # ELO features
                      'elo', 'elo_trend']
     
@@ -1101,11 +1121,26 @@ def _merge_and_create_differentials(df: pd.DataFrame, long_df: pd.DataFrame) -> 
         'opp_sig_strikes_attempted_dec_adjperf_dec_avg_diff',
         
         # --- "HEAD ≈ SIG" OVERLAP (r = 0.97-0.98) ---
-        # ~80% of significant strikes ARE head strikes; keep sig_strikes
+        # Drop ALL head_strikes variants — confirmed negative importance in Draft 18.2
         'head_strikes_attempted_dec_avg_diff',
         'head_strikes_attempted_dec_adjperf_dec_avg_diff',
         'head_strikes_landed_dec_avg_diff',
         'head_strikes_landed_dec_adjperf_dec_avg_diff',
+        
+        # --- RAW OPP_* LANDED COLUMNS (Draft 19.1: Option A) ---
+        # We now compute proper defense ratios (sig_strike_defense, head_def, etc.)
+        # from these opp_* columns. Keeping both creates new collinearity.
+        # Keep the defense ratios, drop the raw inputs.
+        'opp_sig_strikes_landed_dec_avg_diff',
+        'opp_sig_strikes_landed_dec_adjperf_dec_avg_diff',
+        'opp_head_strikes_landed_dec_avg_diff',
+        'opp_head_strikes_landed_dec_adjperf_dec_avg_diff',
+        'opp_body_strikes_landed_dec_avg_diff',
+        'opp_body_strikes_landed_dec_adjperf_dec_avg_diff',
+        'opp_leg_strikes_landed_dec_avg_diff',
+        'opp_leg_strikes_landed_dec_adjperf_dec_avg_diff',
+        'opp_takedowns_landed_dec_avg_diff',
+        'opp_takedowns_landed_dec_adjperf_dec_avg_diff',
     ]
     
     dropped = [c for c in collinearity_drops if c in final_cols]
